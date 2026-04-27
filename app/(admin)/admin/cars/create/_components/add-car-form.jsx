@@ -6,7 +6,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { toast } from "sonner";
-import { Loader2, X, Upload } from "lucide-react";
+import { Loader2, X, Upload, Wand2 } from "lucide-react";
 import { useDropzone } from "react-dropzone";
 
 import { Input } from "@/components/ui/input";
@@ -29,6 +29,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { addCar } from "@/actions/cars";
+import { removeImageBackground } from "@/actions/image-processing";
 import useFetch from "@/hooks/use-fetch";
 import Image from "next/image";
 
@@ -71,6 +72,7 @@ export const AddCarForm = () => {
   const [uploadedImages, setUploadedImages] = useState([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [imageError, setImageError] = useState("");
+  const [processingIndex, setProcessingIndex] = useState(null);
 
   // Initialize form with react-hook-form and zod
   const {
@@ -172,6 +174,30 @@ export const AddCarForm = () => {
   // Remove image from upload preview
   const removeImage = (index) => {
     setUploadedImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Remove background from image
+  const handleRemoveBackground = async (index) => {
+    setProcessingIndex(index);
+    try {
+      const result = await removeImageBackground(uploadedImages[index]);
+
+      if (result.success) {
+        // Replace the image with the processed one
+        setUploadedImages((prev) => {
+          const newImages = [...prev];
+          newImages[index] = result.data;
+          return newImages;
+        });
+        toast.success("Background removed successfully!");
+      } else {
+        toast.error(result.error || "Failed to remove background");
+      }
+    } catch (error) {
+      toast.error("Failed to remove background");
+    } finally {
+      setProcessingIndex(null);
+    }
   };
 
   const onSubmit = async (data) => {
@@ -512,14 +538,34 @@ export const AddCarForm = () => {
                           className="h-28 w-full object-cover rounded-md"
                           priority
                         />
+                        {/* Remove button */}
                         <Button
                           type="button"
                           size="icon"
                           variant="destructive"
                           className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
                           onClick={() => removeImage(index)}
+                          disabled={processingIndex === index}
                         >
                           <X className="h-3 w-3" />
+                        </Button>
+                        {/* Remove Background button */}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="absolute bottom-1 left-1 right-1 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={() => handleRemoveBackground(index)}
+                          disabled={processingIndex !== null}
+                        >
+                          {processingIndex === index ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <>
+                              <Wand2 className="h-3 w-3 mr-1" />
+                              Remove BG
+                            </>
+                          )}
                         </Button>
                       </div>
                     ))}
