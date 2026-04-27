@@ -1,7 +1,5 @@
 import { getSavedCars } from "@/actions/car-listing";
 import { SavedCarsList } from "./_components/saved-cars-list";
-import { auth } from "@clerk/nextjs/server";
-import { redirect } from "next/navigation";
 
 export const metadata = {
   title: "Saved Cars | Vehiql",
@@ -9,12 +7,6 @@ export const metadata = {
 };
 
 export default async function SavedCarsPage() {
-  // Check authentication on server
-  const { userId } = await auth();
-  if (!userId) {
-    redirect("/sign-in?redirect=/saved-cars");
-  }
-
   // Fetch saved cars on the server
   const savedCarsResult = await getSavedCars();
 

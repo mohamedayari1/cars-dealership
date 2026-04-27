@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { useAuth } from "@clerk/nextjs";
 import { AlertCircle, Calendar } from "lucide-react";
 import {
   Car,
@@ -35,7 +34,6 @@ import EmiCalculator from "./emi-calculator";
 
 export function CarDetails({ car, testDriveInfo }) {
   const router = useRouter();
-  const { isSignedIn } = useAuth();
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isWishlisted, setIsWishlisted] = useState(car.wishlisted);
 
@@ -63,12 +61,6 @@ export function CarDetails({ car, testDriveInfo }) {
 
   // Handle save car
   const handleSaveCar = async () => {
-    if (!isSignedIn) {
-      toast.error("Please sign in to save cars");
-      router.push("/sign-in");
-      return;
-    }
-
     if (savingCar) return;
 
     // Use the toggleSavedCarFn from useFetch hook
@@ -100,11 +92,6 @@ export function CarDetails({ car, testDriveInfo }) {
 
   // Handle book test drive
   const handleBookTestDrive = () => {
-    if (!isSignedIn) {
-      toast.error("Please sign in to book a test drive");
-      router.push("/sign-in");
-      return;
-    }
     router.push(`/test-drive/${car.id}`);
   };
 
