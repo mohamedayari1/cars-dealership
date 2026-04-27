@@ -1,13 +1,13 @@
 "use server";
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { v4 as uuidv4 } from "uuid";
 import { db } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
 import { serializeCarData } from "@/lib/helpers";
+import fs from "fs/promises";
+import path from "path";
 
 // Function to convert File to base64
 async function fileToBase64(file) {
@@ -126,7 +126,7 @@ export async function processCarImageWithAI(file) {
   }
 }
 
-// Add a car to the database with images
+// Add a car to the database with images (local storage)
 export async function addCar({ carData, images }) {
   try {
     const { userId } = await auth();
@@ -140,13 +140,12 @@ export async function addCar({ carData, images }) {
 
     // Create a unique folder name for this car's images
     const carId = uuidv4();
-    const folderPath = `cars/${carId}`;
+    const uploadDir = path.join(process.cwd(), "public", "uploads", "cars", carId);
 
-    // Initialize Supabase client for server-side operations
-    const cookieStore = await cookies();
-    const supabase = createClient(cookieStore);
+    // Create the directory
+    await fs.mkdir(uploadDir, { recursive: true });
 
-    // Upload all images to Supabase storage
+    // Save all images locally
     const imageUrls = [];
 
     for (let i = 0; i < images.length; i++) {
@@ -168,23 +167,13 @@ export async function addCar({ carData, images }) {
 
       // Create filename
       const fileName = `image-${Date.now()}-${i}.${fileExtension}`;
-      const filePath = `${folderPath}/${fileName}`;
+      const filePath = path.join(uploadDir, fileName);
 
-      // Upload the file buffer directly
-      const { data, error } = await supabase.storage
-        .from("car-images")
-        .upload(filePath, imageBuffer, {
-          contentType: `image/${fileExtension}`,
-        });
+      // Write the file locally
+      await fs.writeFile(filePath, imageBuffer);
 
-      if (error) {
-        console.error("Error uploading image:", error);
-        throw new Error(`Failed to upload image: ${error.message}`);
-      }
-
-      // Get the public URL for the uploaded file
-      const publicUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/car-images/${filePath}`; // disable cache in config
-
+      // Store the public URL path
+      const publicUrl = `/uploads/cars/${carId}/${fileName}`;
       imageUrls.push(publicUrl);
     }
 
@@ -195,7 +184,7 @@ export async function addCar({ carData, images }) {
     // Add the car to the database
     const car = await db.car.create({
       data: {
-        id: carId, // Use the same ID we used for the folder
+        id: carId,
         make: carData.make,
         model: carData.model,
         year: carData.year,
@@ -209,7 +198,7 @@ export async function addCar({ carData, images }) {
         description: carData.description,
         status: carData.status,
         featured: carData.featured,
-        images: imageUrls, // Store the array of image URLs
+        images: imageUrls,
       },
     });
 
@@ -284,34 +273,13 @@ export async function deleteCar(id) {
       where: { id },
     });
 
-    // Delete the images from Supabase storage
+    // Delete the local image folder
     try {
-      const cookieStore = cookies();
-      const supabase = createClient(cookieStore);
-
-      // Extract file paths from image URLs
-      const filePaths = car.images
-        .map((imageUrl) => {
-          const url = new URL(imageUrl);
-          const pathMatch = url.pathname.match(/\/car-images\/(.*)/);
-          return pathMatch ? pathMatch[1] : null;
-        })
-        .filter(Boolean);
-
-      // Delete files from storage if paths were extracted
-      if (filePaths.length > 0) {
-        const { error } = await supabase.storage
-          .from("car-images")
-          .remove(filePaths);
-
-        if (error) {
-          console.error("Error deleting images:", error);
-          // We continue even if image deletion fails
-        }
-      }
+      const carDir = path.join(process.cwd(), "public", "uploads", "cars", id);
+      await fs.rm(carDir, { recursive: true, force: true });
     } catch (storageError) {
-      console.error("Error with storage operations:", storageError);
-      // Continue with the function even if storage operations fail
+      console.error("Error deleting local images:", storageError);
+      // Continue even if deletion fails
     }
 
     // Revalidate the cars list page
