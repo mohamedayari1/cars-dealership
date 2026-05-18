@@ -19,7 +19,7 @@ export async function removeImageBackground(imageBase64) {
       ? imageBase64.split(",")[1]
       : imageBase64;
 
-    // Call Remove.bg API
+    // Call Remove.bg API - get transparent background
     const response = await fetch("https://api.remove.bg/v1.0/removebg", {
       method: "POST",
       headers: {
@@ -30,7 +30,7 @@ export async function removeImageBackground(imageBase64) {
         image_file_b64: base64Data,
         size: "auto",
         format: "png",
-        bg_color: "FFFFFF", // White background
+        // No bg_color - returns transparent background
       }),
     });
 
@@ -62,14 +62,14 @@ export async function removeImageBackground(imageBase64) {
 }
 
 /**
- * Add tiled company name watermark across the image
- * Creates a diagonal pattern with "AI Car Marketplace" repeated 6 times
+ * Add tiled company name watermark to the background only
+ * The car (transparent) is placed on top of the watermarked white background
  */
 async function addLogoWatermark(imageBase64) {
-  const imageBuffer = Buffer.from(imageBase64, "base64");
+  const carBuffer = Buffer.from(imageBase64, "base64");
 
   // Get image dimensions
-  const metadata = await sharp(imageBuffer).metadata();
+  const metadata = await sharp(carBuffer).metadata();
   const { width, height } = metadata;
 
   // Calculate font size relative to image width (about 5% of width)
@@ -90,25 +90,29 @@ async function addLogoWatermark(imageBase64) {
     }
   }
 
-  // Create SVG with all watermark text instances
+  // Create SVG with white background and watermark text
   const textElements = watermarks
     .map(
       ({ x, y }) =>
-        `<text x="${x}" y="${y}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="bold" fill="rgba(100, 100, 100, 0.25)" text-anchor="middle" transform="rotate(-30, ${x}, ${y})">AI Car Marketplace</text>`
+        `<text x="${x}" y="${y}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="bold" fill="rgba(50, 50, 50, 0.5)" text-anchor="middle" transform="rotate(-30, ${x}, ${y})">AI Car Marketplace</text>`
     )
     .join("\n");
 
-  const svgWatermark = `
+  // Create white background with watermarks as SVG
+  const backgroundWithWatermarks = `
     <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="white"/>
       ${textElements}
     </svg>
   `;
 
-  // Composite the watermark onto the image
-  const result = await sharp(imageBuffer)
+  // Create the final image:
+  // 1. Start with watermarked white background
+  // 2. Composite the car (with transparent background) on top
+  const result = await sharp(Buffer.from(backgroundWithWatermarks))
     .composite([
       {
-        input: Buffer.from(svgWatermark),
+        input: carBuffer,
         top: 0,
         left: 0,
       },
