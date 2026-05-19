@@ -6,7 +6,8 @@ import fs from "fs/promises";
 import path from "path";
 
 // Configuration
-const GARAGE_BACKGROUND_PATH = process.env.GARAGE_BACKGROUND_PATH || "public/assets/garage-background.png";
+const GARAGE_BACKGROUNDS_DIR = process.env.GARAGE_BACKGROUNDS_DIR || "public/assets";
+const GARAGE_BACKGROUND_PATTERN = /^garage-background.*\.(png|jpg|jpeg)$/i;
 
 /**
  * Remove background from car image using Remove.bg API
@@ -81,6 +82,101 @@ export async function removeImageBackground(imageBase64) {
 }
 
 /**
+ * Load all available garage backgrounds from the assets directory
+ */
+async function loadGarageBackgrounds() {
+  const backgroundsDir = path.join(process.cwd(), GARAGE_BACKGROUNDS_DIR);
+  const files = await fs.readdir(backgroundsDir);
+
+  const backgrounds = [];
+  for (const file of files) {
+    if (GARAGE_BACKGROUND_PATTERN.test(file)) {
+      const filePath = path.join(backgroundsDir, file);
+      const buffer = await fs.readFile(filePath);
+      const ext = path.extname(file).toLowerCase();
+      backgrounds.push({
+        name: file,
+        path: filePath,
+        base64: buffer.toString("base64"),
+        mimeType: ext === ".png" ? "image/png" : "image/jpeg",
+      });
+    }
+  }
+
+  return backgrounds;
+}
+
+/**
+ * Use Gemini to analyze the car angle and select the best matching background
+ */
+async function selectBackgroundWithGemini(ai, carImageBase64, backgrounds) {
+  if (backgrounds.length === 1) {
+    console.log(`   📷 Only one background available, using: ${backgrounds[0].name}`);
+    return backgrounds[0];
+  }
+
+  console.log(`   🔍 Analyzing car angle to select best background from ${backgrounds.length} options...`);
+
+  const backgroundDescriptions = backgrounds.map((bg, i) => `${i + 1}. ${bg.name}`).join("\n");
+
+  const selectionPrompt = `Analyze this car image and determine its viewing angle (front, rear, left side, right side, front-left, front-right, rear-left, rear-right, etc.).
+
+Then, from these available garage background images, select the ONE that would work best for this car's angle. Consider:
+- The camera perspective of the background should match the car's angle
+- The lighting direction should be complementary
+- The composition should look natural
+
+Available backgrounds:
+${backgroundDescriptions}
+
+IMPORTANT: Respond with ONLY the number of your chosen background (e.g., "1" or "2"). Nothing else.`;
+
+  try {
+    // Build content parts with car image and all background thumbnails
+    const parts = [
+      { text: selectionPrompt },
+      {
+        inlineData: {
+          mimeType: "image/png",
+          data: carImageBase64,
+        },
+      },
+      { text: "\n\nAvailable background images:" },
+    ];
+
+    // Add all backgrounds for Gemini to see
+    for (const bg of backgrounds) {
+      parts.push({
+        inlineData: {
+          mimeType: bg.mimeType,
+          data: bg.base64,
+        },
+      });
+      parts.push({ text: `(${bg.name})` });
+    }
+
+    const result = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: [{ role: "user", parts }],
+    });
+
+    const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const selectedIndex = parseInt(responseText, 10) - 1;
+
+    if (selectedIndex >= 0 && selectedIndex < backgrounds.length) {
+      console.log(`   ✅ Gemini selected background: ${backgrounds[selectedIndex].name}`);
+      return backgrounds[selectedIndex];
+    }
+
+    console.log(`   ⚠️  Could not parse Gemini response: "${responseText}", using first background`);
+    return backgrounds[0];
+  } catch (error) {
+    console.log(`   ⚠️  Background selection failed: ${error.message}, using first background`);
+    return backgrounds[0];
+  }
+}
+
+/**
  * Use Gemini 3.1 Flash Image to composite the car into a garage scene
  * with realistic shadows and lighting
  */
@@ -91,30 +187,29 @@ async function compositeWithGemini(carImageBase64) {
     throw new Error("GEMINI_API_KEY is not configured");
   }
 
-  // Load garage background image
-  console.log("   📂 Loading garage background image...");
-  const garageBackgroundPath = path.join(process.cwd(), GARAGE_BACKGROUND_PATH);
-  let garageBackgroundBase64;
+  // Load all available garage backgrounds
+  console.log("   📂 Loading garage background images...");
+  const backgrounds = await loadGarageBackgrounds();
 
-  try {
-    const garageBuffer = await fs.readFile(garageBackgroundPath);
-    garageBackgroundBase64 = garageBuffer.toString("base64");
-    console.log(`   ✅ Loaded garage background: ${GARAGE_BACKGROUND_PATH}`);
-  } catch (error) {
+  if (backgrounds.length === 0) {
     throw new Error(
-      `Garage background image not found at ${GARAGE_BACKGROUND_PATH}. Please add your garage image.`
+      `No garage backgrounds found in ${GARAGE_BACKGROUNDS_DIR}. Please add images matching pattern: garage-background*.png/jpg`
     );
   }
 
-  // Determine garage image mime type
-  const ext = path.extname(GARAGE_BACKGROUND_PATH).toLowerCase();
-  const garageMimeType = ext === ".png" ? "image/png" : "image/jpeg";
+  console.log(`   ✅ Found ${backgrounds.length} garage background(s): ${backgrounds.map(b => b.name).join(", ")}`);
 
-  // Initialize Gemini 3.1 Flash Image
-  console.log("   🤖 Initializing Gemini 3.1 Flash Image model...");
+  // Initialize Gemini
   const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
+  // Select the best background based on car angle
+  const selectedBackground = await selectBackgroundWithGemini(ai, carImageBase64, backgrounds);
+
+  const garageBackgroundBase64 = selectedBackground.base64;
+  const garageMimeType = selectedBackground.mimeType;
+
   // Create the compositing prompt
+  console.log("   🎨 Compositing car into selected background...");
   const prompt = `You are an expert photo compositor.
 Take this car image (with transparent background) and place it realistically into this garage/showroom scene.
 The garage background already has the company branding on the walls - preserve it.
