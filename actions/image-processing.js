@@ -156,7 +156,7 @@ IMPORTANT: Respond with ONLY the number of your chosen background (e.g., "1" or 
     }
 
     const result = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-3.1-flash-image-preview",
       contents: [{ role: "user", parts }],
     });
 
@@ -205,25 +205,34 @@ async function compositeWithGemini(carImageBase64) {
   // Select the best background based on car angle
   const selectedBackground = await selectBackgroundWithGemini(ai, carImageBase64, backgrounds);
 
+  console.log(`   🏢 Using garage background: ${selectedBackground.name}`);
+
   const garageBackgroundBase64 = selectedBackground.base64;
   const garageMimeType = selectedBackground.mimeType;
 
   // Create the compositing prompt
   console.log("   🎨 Compositing car into selected background...");
-  const prompt = `You are an expert photo compositor.
-Take this car image (with transparent background) and place it realistically into this garage/showroom scene.
-The garage background already has the company branding on the walls - preserve it.
+  const prompt = `You are an expert photo compositor specializing in automotive photography.
+Place this car (transparent background) realistically into this garage scene.
 
-Requirements:
-- Position the car naturally in the center of the garage floor
-- Add realistic shadows under the car matching the garage lighting
-- Adjust the car's lighting to match the ambient light in the garage
-- Add subtle floor reflections if the floor is reflective
-- Make sure the car looks like it naturally belongs in the scene
-- Maintain the car's original proportions and details
-- Keep the existing company branding/logos on the walls visible
+CRITICAL SHADOW REQUIREMENTS:
+1. CONTACT SHADOW: Add a dark, sharp shadow directly under the car where tires touch the floor (opacity ~70-80%)
+2. AMBIENT OCCLUSION: Add soft, diffused shadows in the gap between car undercarriage and floor
+3. CAST SHADOW: Add a softer, elongated shadow extending from the car based on the garage's light source direction
+4. Shadow edges should be slightly blurred/feathered, not hard-cut
 
-Output a high-quality photorealistic composite image.`;
+LIGHTING REQUIREMENTS:
+- Match car's lighting to the garage ambient light
+- Add subtle highlights on car body reflecting garage lights
+- Ensure consistent light direction between car and environment
+
+COMPOSITION:
+- Position car naturally on the garage floor (not floating)
+- Maintain car's original proportions
+- Preserve company branding on walls
+- Add subtle floor reflection if floor is glossy
+
+Output a photorealistic composite where the car appears to genuinely exist in this space.`;
 
   try {
     console.log("   📡 Sending request to Gemini API...");
@@ -253,7 +262,7 @@ Output a high-quality photorealistic composite image.`;
         responseModalities: ["Text", "Image"],
         imageConfig: {
           aspectRatio: "16:9",
-          imageSize: "1K",
+          imageSize: "2K",
         },
       },
     });
