@@ -1,12 +1,21 @@
 "use server";
 
 import sharp from "sharp";
+import { GoogleGenAI } from "@google/genai";
+import fs from "fs/promises";
+import path from "path";
+
+// Configuration
+const GARAGE_BACKGROUND_PATH = process.env.GARAGE_BACKGROUND_PATH || "public/assets/garage-background.png";
 
 /**
  * Remove background from car image using Remove.bg API
- * and add white background with company logo watermark
+ * and composite into garage scene using Gemini AI
  */
 export async function removeImageBackground(imageBase64) {
+  console.log("\n🚗 [IMAGE PIPELINE] Starting image processing...");
+  const startTime = Date.now();
+
   try {
     const apiKey = process.env.REMOVEBG_API_KEY;
 
@@ -19,7 +28,10 @@ export async function removeImageBackground(imageBase64) {
       ? imageBase64.split(",")[1]
       : imageBase64;
 
-    // Call Remove.bg API - get transparent background
+    // Step 1: Call Remove.bg API - get transparent background
+    console.log("📤 [STEP 1/2] Calling Remove.bg API to remove background...");
+    const removeBgStart = Date.now();
+
     const response = await fetch("https://api.remove.bg/v1.0/removebg", {
       method: "POST",
       headers: {
@@ -30,7 +42,6 @@ export async function removeImageBackground(imageBase64) {
         image_file_b64: base64Data,
         size: "auto",
         format: "png",
-        // No bg_color - returns transparent background
       }),
     });
 
@@ -41,75 +52,158 @@ export async function removeImageBackground(imageBase64) {
       );
     }
 
-    // Get the processed image as buffer
+    // Get the transparent car image
     const processedImageBuffer = await response.arrayBuffer();
-    const processedBase64 = Buffer.from(processedImageBuffer).toString("base64");
+    const transparentCarBase64 = Buffer.from(processedImageBuffer).toString("base64");
 
-    // Add logo watermark
-    const finalImage = await addLogoWatermark(processedBase64);
+    console.log(`✅ [STEP 1/2] Remove.bg completed in ${Date.now() - removeBgStart}ms`);
+
+    // Step 2: Composite with garage using Gemini AI
+    console.log("🎨 [STEP 2/2] Calling Gemini AI to composite car into garage...");
+    const geminiStart = Date.now();
+
+    const finalImage = await compositeWithGemini(transparentCarBase64);
+
+    console.log(`✅ [STEP 2/2] Gemini compositing completed in ${Date.now() - geminiStart}ms`);
+    console.log(`🏁 [IMAGE PIPELINE] Total processing time: ${Date.now() - startTime}ms\n`);
 
     return {
       success: true,
       data: `data:image/png;base64,${finalImage}`,
     };
   } catch (error) {
-    console.error("Background removal error:", error);
+    console.error("❌ [IMAGE PIPELINE] Error:", error.message);
     return {
       success: false,
-      error: error.message || "Failed to remove background",
+      error: error.message || "Failed to process image",
     };
   }
 }
 
 /**
- * Add tiled company name watermark to the background only
- * The car (transparent) is placed on top of the watermarked white background
+ * Use Gemini 3.1 Flash Image to composite the car into a garage scene
+ * with realistic shadows and lighting
  */
-async function addLogoWatermark(imageBase64) {
-  const carBuffer = Buffer.from(imageBase64, "base64");
+async function compositeWithGemini(carImageBase64) {
+  const geminiApiKey = process.env.GEMINI_API_KEY;
 
-  // Get image dimensions
-  const metadata = await sharp(carBuffer).metadata();
-  const { width, height } = metadata;
-
-  // Calculate font size relative to image width (about 5% of width)
-  const fontSize = Math.round(width * 0.05);
-
-  // Create positions for 6 watermarks (2 columns x 3 rows)
-  const watermarks = [];
-  const cols = 2;
-  const rows = 3;
-  const xSpacing = width / (cols + 1);
-  const ySpacing = height / (rows + 1);
-
-  for (let row = 1; row <= rows; row++) {
-    for (let col = 1; col <= cols; col++) {
-      const x = xSpacing * col;
-      const y = ySpacing * row;
-      watermarks.push({ x, y });
-    }
+  if (!geminiApiKey) {
+    throw new Error("GEMINI_API_KEY is not configured");
   }
 
-  // Create SVG with white background and watermark text
-  const textElements = watermarks
-    .map(
-      ({ x, y }) =>
-        `<text x="${x}" y="${y}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="bold" fill="rgba(50, 50, 50, 0.5)" text-anchor="middle" transform="rotate(-30, ${x}, ${y})">AI Car Marketplace</text>`
-    )
-    .join("\n");
+  // Load garage background image
+  console.log("   📂 Loading garage background image...");
+  const garageBackgroundPath = path.join(process.cwd(), GARAGE_BACKGROUND_PATH);
+  let garageBackgroundBase64;
 
-  // Create white background with watermarks as SVG
-  const backgroundWithWatermarks = `
-    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="100%" height="100%" fill="white"/>
-      ${textElements}
-    </svg>
-  `;
+  try {
+    const garageBuffer = await fs.readFile(garageBackgroundPath);
+    garageBackgroundBase64 = garageBuffer.toString("base64");
+    console.log(`   ✅ Loaded garage background: ${GARAGE_BACKGROUND_PATH}`);
+  } catch (error) {
+    throw new Error(
+      `Garage background image not found at ${GARAGE_BACKGROUND_PATH}. Please add your garage image.`
+    );
+  }
 
-  // Create the final image:
-  // 1. Start with watermarked white background
-  // 2. Composite the car (with transparent background) on top
-  const result = await sharp(Buffer.from(backgroundWithWatermarks))
+  // Determine garage image mime type
+  const ext = path.extname(GARAGE_BACKGROUND_PATH).toLowerCase();
+  const garageMimeType = ext === ".png" ? "image/png" : "image/jpeg";
+
+  // Initialize Gemini 3.1 Flash Image
+  console.log("   🤖 Initializing Gemini 3.1 Flash Image model...");
+  const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+
+  // Create the compositing prompt
+  const prompt = `You are an expert photo compositor.
+Take this car image (with transparent background) and place it realistically into this garage/showroom scene.
+The garage background already has the company branding on the walls - preserve it.
+
+Requirements:
+- Position the car naturally in the center of the garage floor
+- Add realistic shadows under the car matching the garage lighting
+- Adjust the car's lighting to match the ambient light in the garage
+- Add subtle floor reflections if the floor is reflective
+- Make sure the car looks like it naturally belongs in the scene
+- Maintain the car's original proportions and details
+- Keep the existing company branding/logos on the walls visible
+
+Output a high-quality photorealistic composite image.`;
+
+  try {
+    console.log("   📡 Sending request to Gemini API...");
+    const result = await ai.models.generateContent({
+      model: "gemini-3.1-flash-image-preview",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType: "image/png",
+                data: carImageBase64,
+              },
+            },
+            {
+              inlineData: {
+                mimeType: garageMimeType,
+                data: garageBackgroundBase64,
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: ["Text", "Image"],
+        imageConfig: {
+          aspectRatio: "16:9",
+          imageSize: "1K",
+        },
+      },
+    });
+
+    console.log("   📥 Received response from Gemini, extracting image...");
+
+    // Extract the generated image from the response
+    const part = result.candidates?.[0]?.content?.parts?.find(
+      (p) => p.inlineData
+    );
+
+    if (part?.inlineData) {
+      console.log("   ✅ Image successfully generated by Gemini");
+      return part.inlineData.data;
+    }
+
+    throw new Error("No image generated by Gemini");
+  } catch (error) {
+    console.error("   ❌ Gemini compositing error:", error.message);
+
+    // Fallback: simple composite with Sharp if Gemini fails
+    console.log("   ⚠️  Falling back to simple Sharp composite...");
+    return await fallbackComposite(carImageBase64, garageBackgroundBase64);
+  }
+}
+
+/**
+ * Fallback: Simple Sharp-based composite if Gemini fails
+ */
+async function fallbackComposite(carBase64, backgroundBase64) {
+  console.log("   🔧 [FALLBACK] Using Sharp for simple composite...");
+  const carBuffer = Buffer.from(carBase64, "base64");
+  const bgBuffer = Buffer.from(backgroundBase64, "base64");
+
+  // Get car dimensions
+  const carMeta = await sharp(carBuffer).metadata();
+  console.log(`   📐 [FALLBACK] Car dimensions: ${carMeta.width}x${carMeta.height}`);
+
+  // Resize background to match car dimensions
+  const resizedBg = await sharp(bgBuffer)
+    .resize(carMeta.width, carMeta.height, { fit: "cover" })
+    .toBuffer();
+
+  // Simple composite: car on top of background
+  const result = await sharp(resizedBg)
     .composite([
       {
         input: carBuffer,
@@ -120,6 +214,8 @@ async function addLogoWatermark(imageBase64) {
     .png()
     .toBuffer();
 
+  console.log("   ✅ [FALLBACK] Sharp composite completed");
   return result.toString("base64");
 }
+
 
