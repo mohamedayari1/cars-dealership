@@ -29,9 +29,12 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { addCar } from "@/actions/cars";
-import { removeImageBackground } from "@/actions/image-processing";
+import { removeImageBackground, validateCarImages, getRequiredAngles } from "@/actions/image-processing";
 import useFetch from "@/hooks/use-fetch";
 import Image from "next/image";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { AlertTriangle, CheckCircle2, Camera } from "lucide-react";
 
 // Predefined options
 const fuelTypes = ["Petrol", "Diesel", "Electric", "Hybrid", "Plug-in Hybrid"];
@@ -73,6 +76,8 @@ export const AddCarForm = () => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [imageError, setImageError] = useState("");
   const [processingIndex, setProcessingIndex] = useState(null);
+  const [angleValidation, setAngleValidation] = useState(null);
+  const [isValidatingAngles, setIsValidatingAngles] = useState(false);
 
   // Initialize form with react-hook-form and zod
   const {
@@ -146,12 +151,15 @@ export const AddCarForm = () => {
 
             // When all images are processed
             if (newImages.length === validFiles.length) {
-              setUploadedImages((prev) => [...prev, ...newImages]);
+              const allImages = [...uploadedImages, ...newImages];
+              setUploadedImages(allImages);
               setUploadProgress(0);
               setImageError("");
               toast.success(
                 `Successfully uploaded ${validFiles.length} images`
               );
+              // Trigger angle validation for all images
+              handleValidateAngles(allImages);
             }
           };
           reader.readAsDataURL(file);
@@ -174,6 +182,37 @@ export const AddCarForm = () => {
   // Remove image from upload preview
   const removeImage = (index) => {
     setUploadedImages((prev) => prev.filter((_, i) => i !== index));
+    // Clear validation for removed image
+    if (angleValidation) {
+      setAngleValidation((prev) => ({
+        ...prev,
+        imageResults: prev.imageResults.filter((_, i) => i !== index),
+      }));
+    }
+  };
+
+  // Validate car image angles
+  const handleValidateAngles = async (images) => {
+    if (images.length === 0) return;
+
+    setIsValidatingAngles(true);
+    try {
+      const result = await validateCarImages(images);
+      setAngleValidation(result);
+
+      if (!result.isComplete && result.missingRequired.length > 0) {
+        toast.warning(
+          `Missing angles: ${result.missingRequired.map((a) => a.name).join(", ")}`
+        );
+      } else if (result.isComplete) {
+        toast.success("All required angles detected!");
+      }
+    } catch (error) {
+      console.error("Angle validation error:", error);
+      toast.error("Failed to validate image angles");
+    } finally {
+      setIsValidatingAngles(false);
+    }
   };
 
   // Remove background from image
@@ -521,6 +560,63 @@ export const AddCarForm = () => {
                 )}
               </div>
 
+              {/* Angle Validation Summary */}
+              {(angleValidation || isValidatingAngles) && (
+                <div className="mt-4">
+                  {isValidatingAngles ? (
+                    <Alert>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <AlertTitle>Analyzing Images</AlertTitle>
+                      <AlertDescription>
+                        Detecting camera angles for each image...
+                      </AlertDescription>
+                    </Alert>
+                  ) : angleValidation && (
+                    <Alert variant={angleValidation.isComplete ? "default" : "destructive"}>
+                      {angleValidation.isComplete ? (
+                        <CheckCircle2 className="h-4 w-4" />
+                      ) : (
+                        <AlertTriangle className="h-4 w-4" />
+                      )}
+                      <AlertTitle>
+                        {angleValidation.isComplete
+                          ? "All Required Angles Captured"
+                          : "Missing Required Angles"}
+                      </AlertTitle>
+                      <AlertDescription>
+                        <div className="mt-2 space-y-2">
+                          <div className="flex flex-wrap gap-2">
+                            {angleValidation.requiredAngles?.map((angle) => {
+                              const isDetected = angleValidation.detectedAngles.includes(angle.id);
+                              return (
+                                <Badge
+                                  key={angle.id}
+                                  variant={isDetected ? "default" : angle.required ? "destructive" : "secondary"}
+                                  className="text-xs"
+                                >
+                                  {isDetected ? (
+                                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                                  ) : (
+                                    <Camera className="h-3 w-3 mr-1" />
+                                  )}
+                                  {angle.name}
+                                  {!angle.required && " (optional)"}
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                          {!angleValidation.isComplete && (
+                            <p className="text-sm text-muted-foreground mt-2">
+                              Please upload images from the missing angles for a complete listing.
+                            </p>
+                          )}
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+              )}
+
               {/* Image Previews */}
               {uploadedImages.length > 0 && (
                 <div className="mt-4">
@@ -528,47 +624,65 @@ export const AddCarForm = () => {
                     Uploaded Images ({uploadedImages.length})
                   </h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                    {uploadedImages.map((image, index) => (
-                      <div key={index} className="relative group">
-                        <Image
-                          src={image}
-                          alt={`Car image ${index + 1}`}
-                          height={50}
-                          width={50}
-                          className="h-28 w-full object-cover rounded-md"
-                          priority
-                        />
-                        {/* Remove button */}
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="destructive"
-                          className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => removeImage(index)}
-                          disabled={processingIndex === index}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                        {/* Remove Background button */}
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          className="absolute bottom-1 left-1 right-1 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => handleRemoveBackground(index)}
-                          disabled={processingIndex !== null}
-                        >
-                          {processingIndex === index ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <>
-                              <Wand2 className="h-3 w-3 mr-1" />
-                              Remove BG
-                            </>
+                    {uploadedImages.map((image, index) => {
+                      const imageResult = angleValidation?.imageResults?.find(
+                        (r) => r.index === index
+                      );
+                      const detectedAngle = imageResult?.validation?.angle;
+                      const confidence = imageResult?.validation?.confidence;
+
+                      return (
+                        <div key={index} className="relative group">
+                          <Image
+                            src={image}
+                            alt={`Car image ${index + 1}`}
+                            height={50}
+                            width={50}
+                            className="h-28 w-full object-cover rounded-md"
+                            priority
+                          />
+                          {/* Angle badge */}
+                          {detectedAngle && detectedAngle !== "unknown" && (
+                            <Badge
+                              variant="secondary"
+                              className="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 bg-black/70 text-white"
+                            >
+                              {detectedAngle}
+                              {confidence && ` (${Math.round(confidence * 100)}%)`}
+                            </Badge>
                           )}
-                        </Button>
-                      </div>
-                    ))}
+                          {/* Remove button */}
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="destructive"
+                            className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => removeImage(index)}
+                            disabled={processingIndex === index}
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                          {/* Remove Background button */}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="absolute bottom-1 left-1 right-1 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => handleRemoveBackground(index)}
+                            disabled={processingIndex !== null}
+                          >
+                            {processingIndex === index ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <>
+                                <Wand2 className="h-3 w-3 mr-1" />
+                                Remove BG
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

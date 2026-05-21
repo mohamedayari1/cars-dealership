@@ -215,24 +215,38 @@ async function compositeWithGemini(carImageBase64) {
   const prompt = `You are an expert photo compositor specializing in automotive photography.
 Place this car (transparent background) realistically into this garage scene.
 
-CRITICAL SHADOW REQUIREMENTS:
+===== CRITICAL CONSTRAINTS - DO NOT VIOLATE =====
+1. NEVER modify, complete, enhance, or alter the car image in ANY way
+2. If the car appears partial, cropped, or incomplete - leave it EXACTLY as provided
+3. Do NOT add missing parts (wheels, doors, bumpers, mirrors, etc.)
+4. Do NOT fix damage, scratches, or imperfections on the car
+5. Do NOT change the car's color, shape, or proportions
+6. The car pixels must remain IDENTICAL to the input - only add shadows BELOW/AROUND the car
+7. If the input shows half a car, the output MUST show exactly half a car
+
+===== ALLOWED OPERATIONS ONLY =====
+- Add shadows under and around the car
+- Add floor reflections (reflection of the car as-is, not a "fixed" version)
+- Adjust overall brightness/contrast to match scene lighting
+- Position the car in the scene
+
+SHADOW REQUIREMENTS:
 1. CONTACT SHADOW: Add a dark, sharp shadow directly under the car where tires touch the floor (opacity ~70-80%)
 2. AMBIENT OCCLUSION: Add soft, diffused shadows in the gap between car undercarriage and floor
 3. CAST SHADOW: Add a softer, elongated shadow extending from the car based on the garage's light source direction
 4. Shadow edges should be slightly blurred/feathered, not hard-cut
 
 LIGHTING REQUIREMENTS:
-- Match car's lighting to the garage ambient light
-- Add subtle highlights on car body reflecting garage lights
+- Match scene brightness/contrast only - do NOT add new highlights or reflections to the car body
 - Ensure consistent light direction between car and environment
 
 COMPOSITION:
 - Position car naturally on the garage floor (not floating)
-- Maintain car's original proportions
+- Maintain car's EXACT original proportions - DO NOT SCALE OR DISTORT
 - Preserve company branding on walls
-- Add subtle floor reflection if floor is glossy
+- Add subtle floor reflection if floor is glossy (reflection of the car exactly as-is)
 
-Output a photorealistic composite where the car appears to genuinely exist in this space.`;
+Output a photorealistic composite where the car appears exactly as provided, just placed in this environment.`;
 
   try {
     console.log("   📡 Sending request to Gemini API...");
@@ -322,4 +336,167 @@ async function fallbackComposite(carBase64, backgroundBase64) {
   return result.toString("base64");
 }
 
+// ============================================
+// ANGLE VALIDATION
+// ============================================
 
+/**
+ * Required car angles for a complete listing
+ */
+const REQUIRED_ANGLES = [
+  { id: "front-3/4", name: "Front 3/4 View", required: true, description: "Front of car at ~45° angle" },
+  { id: "side", name: "Side Profile", required: true, description: "Full side view of car" },
+  { id: "rear", name: "Rear View", required: true, description: "Back of car visible" },
+  { id: "interior", name: "Interior", required: false, description: "Dashboard or cabin" },
+];
+
+/**
+ * Get the list of required angles configuration
+ */
+export function getRequiredAngles() {
+  return REQUIRED_ANGLES;
+}
+
+/**
+ * Validate a single car image angle using Gemini AI
+ */
+export async function validateCarAngle(imageBase64) {
+  console.log("🔍 [ANGLE VALIDATION] Analyzing image angle...");
+
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+
+  if (!geminiApiKey) {
+    throw new Error("GEMINI_API_KEY is not configured");
+  }
+
+  // Extract base64 data (remove data:image/xxx;base64, prefix)
+  const base64Data = imageBase64.includes(",")
+    ? imageBase64.split(",")[1]
+    : imageBase64;
+
+  const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+
+  const prompt = `Analyze this car image and determine the camera angle/perspective.
+
+Classify into ONE of these categories:
+- front-3/4: Front view at approximately 45 degrees (shows front and one side)
+- front: Directly facing the front of the car
+- side: Side profile view (perpendicular to car, showing full side)
+- rear-3/4: Rear view at approximately 45 degrees (shows back and one side)
+- rear: Directly facing the rear of the car
+- interior: Dashboard, cabin, or interior view
+- detail: Close-up of specific feature (wheel, badge, etc.)
+- unknown: Cannot determine or not a car image
+
+Also assess the image quality:
+- Is the entire car visible in frame? (not cropped off)
+- Is the image well-lit and clear?
+- Is the car the main subject of the photo?
+
+IMPORTANT: Respond with ONLY valid JSON, no other text:
+{
+  "angle": "category-id-from-above",
+  "confidence": 0.85,
+  "isCarComplete": true,
+  "isWellLit": true,
+  "isCarMainSubject": true,
+  "issues": []
+}
+
+If there are issues, list them in the issues array, e.g.: ["car is partially cropped", "image is too dark"]`;
+
+  try {
+    const result = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType: "image/png",
+                data: base64Data,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+    // Parse JSON response
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const validation = JSON.parse(jsonMatch[0]);
+      console.log(`✅ [ANGLE VALIDATION] Detected angle: ${validation.angle} (confidence: ${validation.confidence})`);
+      return {
+        success: true,
+        ...validation,
+      };
+    }
+
+    throw new Error("Could not parse validation response");
+  } catch (error) {
+    console.error("❌ [ANGLE VALIDATION] Error:", error.message);
+    return {
+      success: false,
+      angle: "unknown",
+      confidence: 0,
+      isCarComplete: false,
+      isWellLit: false,
+      isCarMainSubject: false,
+      issues: [error.message],
+    };
+  }
+}
+
+/**
+ * Validate all uploaded images and check for required angles
+ */
+export async function validateCarImages(images) {
+  console.log(`\n📸 [ANGLE VALIDATION] Validating ${images.length} image(s)...`);
+  const startTime = Date.now();
+
+  // Validate each image
+  const results = await Promise.all(
+    images.map(async (img, index) => {
+      console.log(`   Processing image ${index + 1}/${images.length}...`);
+      const validation = await validateCarAngle(img);
+      return {
+        index,
+        validation,
+      };
+    })
+  );
+
+  // Determine which angles were detected
+  const detectedAngles = new Set();
+  for (const result of results) {
+    if (result.validation.success && result.validation.angle !== "unknown") {
+      detectedAngles.add(result.validation.angle);
+    }
+  }
+
+  // Check which required angles are missing
+  const missingRequired = REQUIRED_ANGLES
+    .filter((angle) => angle.required && !detectedAngles.has(angle.id))
+    .map((angle) => ({ id: angle.id, name: angle.name }));
+
+  const isComplete = missingRequired.length === 0;
+
+  console.log(`✅ [ANGLE VALIDATION] Completed in ${Date.now() - startTime}ms`);
+  console.log(`   Detected angles: ${Array.from(detectedAngles).join(", ") || "none"}`);
+  console.log(`   Missing required: ${missingRequired.map((a) => a.name).join(", ") || "none"}`);
+  console.log(`   Is complete: ${isComplete}\n`);
+
+  return {
+    success: true,
+    imageResults: results,
+    detectedAngles: Array.from(detectedAngles),
+    missingRequired,
+    isComplete,
+    requiredAngles: REQUIRED_ANGLES,
+  };
+}
