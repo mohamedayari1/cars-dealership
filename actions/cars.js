@@ -126,8 +126,45 @@ export async function processCarImageWithAI(file) {
   }
 }
 
-// Add a car to the database with images (local storage)
-export async function addCar({ carData, images }) {
+/**
+ * Helper function to save images to disk
+ * @param {string[]} images - Array of base64 image data URLs
+ * @param {string} uploadDir - Directory to save images
+ * @param {string} carId - Car ID for URL path
+ * @param {string} prefix - Filename prefix (e.g., "exterior", "interior")
+ * @returns {Promise<string[]>} Array of public URLs
+ */
+async function saveImages(images, uploadDir, carId, prefix) {
+  const urls = [];
+
+  for (let i = 0; i < images.length; i++) {
+    const base64Data = images[i];
+
+    if (!base64Data || !base64Data.startsWith("data:image/")) {
+      console.warn(`Skipping invalid ${prefix} image data`);
+      continue;
+    }
+
+    const base64 = base64Data.split(",")[1];
+    const imageBuffer = Buffer.from(base64, "base64");
+
+    const mimeMatch = base64Data.match(/data:image\/([a-zA-Z0-9]+);/);
+    const fileExtension = mimeMatch ? mimeMatch[1] : "jpeg";
+
+    const fileName = `${prefix}-${Date.now()}-${i}.${fileExtension}`;
+    const filePath = path.join(uploadDir, fileName);
+
+    await fs.writeFile(filePath, imageBuffer);
+
+    const publicUrl = `/uploads/cars/${carId}/${fileName}`;
+    urls.push(publicUrl);
+  }
+
+  return urls;
+}
+
+// Add a car to the database with typed images (exterior/interior)
+export async function addCar({ carData, exteriorImages = [], interiorImages = [] }) {
   try {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
@@ -145,43 +182,20 @@ export async function addCar({ carData, images }) {
     // Create the directory
     await fs.mkdir(uploadDir, { recursive: true });
 
-    // Save all images locally
-    const imageUrls = [];
+    // Save exterior and interior images with prefixes
+    const exteriorUrls = await saveImages(exteriorImages, uploadDir, carId, "exterior");
+    const interiorUrls = await saveImages(interiorImages, uploadDir, carId, "interior");
 
-    for (let i = 0; i < images.length; i++) {
-      const base64Data = images[i];
+    // Combine all URLs for backward compatibility
+    const allImageUrls = [...exteriorUrls, ...interiorUrls];
 
-      // Skip if image data is not valid
-      if (!base64Data || !base64Data.startsWith("data:image/")) {
-        console.warn("Skipping invalid image data");
-        continue;
-      }
-
-      // Extract the base64 part (remove the data:image/xyz;base64, prefix)
-      const base64 = base64Data.split(",")[1];
-      const imageBuffer = Buffer.from(base64, "base64");
-
-      // Determine file extension from the data URL
-      const mimeMatch = base64Data.match(/data:image\/([a-zA-Z0-9]+);/);
-      const fileExtension = mimeMatch ? mimeMatch[1] : "jpeg";
-
-      // Create filename
-      const fileName = `image-${Date.now()}-${i}.${fileExtension}`;
-      const filePath = path.join(uploadDir, fileName);
-
-      // Write the file locally
-      await fs.writeFile(filePath, imageBuffer);
-
-      // Store the public URL path
-      const publicUrl = `/uploads/cars/${carId}/${fileName}`;
-      imageUrls.push(publicUrl);
-    }
-
-    if (imageUrls.length === 0) {
+    if (allImageUrls.length === 0) {
       throw new Error("No valid images were uploaded");
     }
 
-    // Add the car to the database
+    // Add the car to the database (without CarImage relation for now)
+    // TODO: After running `npx prisma migrate dev --name add-car-image-model`,
+    // you can enable the carImages relation by uncommenting below
     const car = await db.car.create({
       data: {
         id: carId,
@@ -198,7 +212,14 @@ export async function addCar({ carData, images }) {
         description: carData.description,
         status: carData.status,
         featured: carData.featured,
-        images: imageUrls,
+        images: allImageUrls,
+        // Uncomment after migration:
+        // carImages: {
+        //   create: [
+        //     ...exteriorUrls.map((url, i) => ({ url, type: "EXTERIOR", sortOrder: i })),
+        //     ...interiorUrls.map((url, i) => ({ url, type: "INTERIOR", sortOrder: exteriorUrls.length + i })),
+        //   ],
+        // },
       },
     });
 

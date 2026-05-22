@@ -29,12 +29,11 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { addCar } from "@/actions/cars";
-import { removeImageBackground, validateCarImages, getRequiredAngles } from "@/actions/image-processing";
+import { removeImageBackground, processInteriorImage, validateCarImages } from "@/actions/image-processing";
 import useFetch from "@/hooks/use-fetch";
 import Image from "next/image";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { AlertTriangle, CheckCircle2, Camera } from "lucide-react";
+import { CheckCircle2, Car, LayoutGrid } from "lucide-react";
 
 // Predefined options
 const fuelTypes = ["Petrol", "Diesel", "Electric", "Hybrid", "Plug-in Hybrid"];
@@ -72,12 +71,19 @@ const carFormSchema = z.object({
 
 export const AddCarForm = () => {
   const router = useRouter();
-  const [uploadedImages, setUploadedImages] = useState([]);
-  const [uploadProgress, setUploadProgress] = useState(0);
+  // Separate state for exterior and interior images
+  const [exteriorImages, setExteriorImages] = useState([]);
+  const [interiorImages, setInteriorImages] = useState([]);
+  const [exteriorUploadProgress, setExteriorUploadProgress] = useState(0);
+  const [interiorUploadProgress, setInteriorUploadProgress] = useState(0);
   const [imageError, setImageError] = useState("");
-  const [processingIndex, setProcessingIndex] = useState(null);
+  const [processingImage, setProcessingImage] = useState({ type: null, index: null });
   const [angleValidation, setAngleValidation] = useState(null);
   const [isValidatingAngles, setIsValidatingAngles] = useState(false);
+
+  // Max images per type
+  const MAX_EXTERIOR_IMAGES = 3;
+  const MAX_INTERIOR_IMAGES = 2;
 
   // Initialize form with react-hook-form and zod
   const {
@@ -121,9 +127,15 @@ export const AddCarForm = () => {
     }
   }, [addCarResult, router]);
 
-  // Handle multiple image uploads with Dropzone
-  const onMultiImagesDrop = useCallback((acceptedFiles) => {
-    const validFiles = acceptedFiles.filter((file) => {
+  // Handle exterior image uploads
+  const onExteriorImagesDrop = useCallback((acceptedFiles) => {
+    const remainingSlots = MAX_EXTERIOR_IMAGES - exteriorImages.length;
+    if (remainingSlots <= 0) {
+      toast.error(`Maximum ${MAX_EXTERIOR_IMAGES} exterior images allowed`);
+      return;
+    }
+
+    const validFiles = acceptedFiles.slice(0, remainingSlots).filter((file) => {
       if (file.size > 5 * 1024 * 1024) {
         toast.error(`${file.name} exceeds 5MB limit and will be skipped`);
         return false;
@@ -133,56 +145,104 @@ export const AddCarForm = () => {
 
     if (validFiles.length === 0) return;
 
-    // Simulate upload progress
     let progress = 0;
     const interval = setInterval(() => {
       progress += 10;
-      setUploadProgress(progress);
+      setExteriorUploadProgress(progress);
 
       if (progress >= 100) {
         clearInterval(interval);
 
-        // Process the images
         const newImages = [];
         validFiles.forEach((file) => {
           const reader = new FileReader();
           reader.onload = (e) => {
             newImages.push(e.target.result);
 
-            // When all images are processed
             if (newImages.length === validFiles.length) {
-              const allImages = [...uploadedImages, ...newImages];
-              setUploadedImages(allImages);
-              setUploadProgress(0);
+              const allExterior = [...exteriorImages, ...newImages];
+              setExteriorImages(allExterior);
+              setExteriorUploadProgress(0);
               setImageError("");
-              toast.success(
-                `Successfully uploaded ${validFiles.length} images`
-              );
-              // Trigger angle validation for all images
-              handleValidateAngles(allImages);
+              toast.success(`Uploaded ${validFiles.length} exterior image(s)`);
+              handleValidateAngles(allExterior);
             }
           };
           reader.readAsDataURL(file);
         });
       }
     }, 200);
-  }, []);
+  }, [exteriorImages]);
 
+  // Handle interior image uploads
+  const onInteriorImagesDrop = useCallback((acceptedFiles) => {
+    const remainingSlots = MAX_INTERIOR_IMAGES - interiorImages.length;
+    if (remainingSlots <= 0) {
+      toast.error(`Maximum ${MAX_INTERIOR_IMAGES} interior images allowed`);
+      return;
+    }
+
+    const validFiles = acceptedFiles.slice(0, remainingSlots).filter((file) => {
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error(`${file.name} exceeds 5MB limit and will be skipped`);
+        return false;
+      }
+      return true;
+    });
+
+    if (validFiles.length === 0) return;
+
+    let progress = 0;
+    const interval = setInterval(() => {
+      progress += 10;
+      setInteriorUploadProgress(progress);
+
+      if (progress >= 100) {
+        clearInterval(interval);
+
+        const newImages = [];
+        validFiles.forEach((file) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            newImages.push(e.target.result);
+
+            if (newImages.length === validFiles.length) {
+              setInteriorImages((prev) => [...prev, ...newImages]);
+              setInteriorUploadProgress(0);
+              toast.success(`Uploaded ${validFiles.length} interior image(s)`);
+            }
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+    }, 200);
+  }, [interiorImages]);
+
+  // Exterior dropzone
   const {
-    getRootProps: getMultiImageRootProps,
-    getInputProps: getMultiImageInputProps,
+    getRootProps: getExteriorRootProps,
+    getInputProps: getExteriorInputProps,
   } = useDropzone({
-    onDrop: onMultiImagesDrop,
-    accept: {
-      "image/*": [".jpeg", ".jpg", ".png", ".webp"],
-    },
+    onDrop: onExteriorImagesDrop,
+    accept: { "image/*": [".jpeg", ".jpg", ".png", ".webp"] },
     multiple: true,
+    disabled: exteriorImages.length >= MAX_EXTERIOR_IMAGES,
   });
 
-  // Remove image from upload preview
-  const removeImage = (index) => {
-    setUploadedImages((prev) => prev.filter((_, i) => i !== index));
-    // Clear validation for removed image
+  // Interior dropzone
+  const {
+    getRootProps: getInteriorRootProps,
+    getInputProps: getInteriorInputProps,
+  } = useDropzone({
+    onDrop: onInteriorImagesDrop,
+    accept: { "image/*": [".jpeg", ".jpg", ".png", ".webp"] },
+    multiple: true,
+    disabled: interiorImages.length >= MAX_INTERIOR_IMAGES,
+  });
+
+  // Remove exterior image
+  const removeExteriorImage = (index) => {
+    setExteriorImages((prev) => prev.filter((_, i) => i !== index));
     if (angleValidation) {
       setAngleValidation((prev) => ({
         ...prev,
@@ -191,7 +251,12 @@ export const AddCarForm = () => {
     }
   };
 
-  // Validate car image angles
+  // Remove interior image
+  const removeInteriorImage = (index) => {
+    setInteriorImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Validate car image angles (informational only, non-blocking)
   const handleValidateAngles = async (images) => {
     if (images.length === 0) return;
 
@@ -199,50 +264,65 @@ export const AddCarForm = () => {
     try {
       const result = await validateCarImages(images);
       setAngleValidation(result);
-
-      if (!result.isComplete && result.missingRequired.length > 0) {
-        toast.warning(
-          `Missing angles: ${result.missingRequired.map((a) => a.name).join(", ")}`
-        );
-      } else if (result.isComplete) {
-        toast.success("All required angles detected!");
-      }
+      // Just informational - no warnings for missing angles
     } catch (error) {
       console.error("Angle validation error:", error);
-      toast.error("Failed to validate image angles");
+      // Silent fail - angle detection is optional
     } finally {
       setIsValidatingAngles(false);
     }
   };
 
-  // Remove background from image
+  // Remove background from exterior image (hero shot pipeline)
   const handleRemoveBackground = async (index) => {
-    setProcessingIndex(index);
+    setProcessingImage({ type: "exterior", index });
     try {
-      const result = await removeImageBackground(uploadedImages[index]);
+      const result = await removeImageBackground(exteriorImages[index]);
 
       if (result.success) {
-        // Replace the image with the processed one
-        setUploadedImages((prev) => {
+        setExteriorImages((prev) => {
           const newImages = [...prev];
           newImages[index] = result.data;
           return newImages;
         });
-        toast.success("Background removed successfully!");
+        toast.success("Background removed and composited!");
       } else {
         toast.error(result.error || "Failed to remove background");
       }
     } catch (error) {
       toast.error("Failed to remove background");
     } finally {
-      setProcessingIndex(null);
+      setProcessingImage({ type: null, index: null });
+    }
+  };
+
+  // Process interior image (whiten windows)
+  const handleWhitenWindows = async (index) => {
+    setProcessingImage({ type: "interior", index });
+    try {
+      const result = await processInteriorImage(interiorImages[index]);
+
+      if (result.success) {
+        setInteriorImages((prev) => {
+          const newImages = [...prev];
+          newImages[index] = result.data;
+          return newImages;
+        });
+        toast.success("Windows whitened successfully!");
+      } else {
+        toast.error(result.error || "Failed to process interior image");
+      }
+    } catch (error) {
+      toast.error("Failed to process interior image");
+    } finally {
+      setProcessingImage({ type: null, index: null });
     }
   };
 
   const onSubmit = async (data) => {
-    // Check if images are uploaded
-    if (uploadedImages.length === 0) {
-      setImageError("Please upload at least one image");
+    // Check if at least one exterior image is uploaded
+    if (exteriorImages.length === 0) {
+      setImageError("Please upload at least one exterior image");
       return;
     }
 
@@ -255,10 +335,11 @@ export const AddCarForm = () => {
       seats: data.seats ? parseInt(data.seats) : null,
     };
 
-    // Call the addCar function with our useFetch hook
+    // Call the addCar function with typed images
     await addCarFn({
       carData,
-      images: uploadedImages,
+      exteriorImages,
+      interiorImages,
     });
   };
 
@@ -520,172 +601,257 @@ export const AddCarForm = () => {
               </div>
             </div>
 
-            {/* Image Upload with Dropzone */}
-            <div>
-              <Label
-                htmlFor="images"
-                className={imageError ? "text-red-500" : ""}
-              >
-                Images{" "}
-                {imageError && <span className="text-red-500">*</span>}
-              </Label>
-              <div className="mt-2">
-                <div
-                  {...getMultiImageRootProps()}
-                  className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:bg-gray-50 transition ${
-                    imageError ? "border-red-500" : "border-gray-300"
-                  }`}
-                >
-                  <input {...getMultiImageInputProps()} />
-                  <div className="flex flex-col items-center justify-center">
-                    <Upload className="h-12 w-12 text-gray-400 mb-3" />
-                    <span className="text-sm text-gray-600">
-                      Drag & drop or click to upload multiple images
-                    </span>
-                    <span className="text-xs text-gray-500 mt-1">
-                      (JPG, PNG, WebP, max 5MB each)
-                    </span>
-                  </div>
-                </div>
-                {imageError && (
-                  <p className="text-xs text-red-500 mt-1">{imageError}</p>
-                )}
-                {uploadProgress > 0 && (
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
-                    <div
-                      className="bg-blue-600 h-2.5 rounded-full"
-                      style={{ width: `${uploadProgress}%` }}
-                    ></div>
-                  </div>
-                )}
-              </div>
+            {/* Image Upload Sections */}
+            <div className="space-y-6">
+              {imageError && (
+                <p className="text-sm text-red-500">{imageError}</p>
+              )}
 
-              {/* Angle Validation Summary */}
-              {(angleValidation || isValidatingAngles) && (
-                <div className="mt-4">
-                  {isValidatingAngles ? (
-                    <Alert>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      <AlertTitle>Analyzing Images</AlertTitle>
-                      <AlertDescription>
-                        Detecting camera angles for each image...
-                      </AlertDescription>
-                    </Alert>
-                  ) : angleValidation && (
-                    <Alert variant={angleValidation.isComplete ? "default" : "destructive"}>
-                      {angleValidation.isComplete ? (
-                        <CheckCircle2 className="h-4 w-4" />
-                      ) : (
-                        <AlertTriangle className="h-4 w-4" />
-                      )}
-                      <AlertTitle>
-                        {angleValidation.isComplete
-                          ? "All Required Angles Captured"
-                          : "Missing Required Angles"}
-                      </AlertTitle>
-                      <AlertDescription>
-                        <div className="mt-2 space-y-2">
-                          <div className="flex flex-wrap gap-2">
-                            {angleValidation.requiredAngles?.map((angle) => {
-                              const isDetected = angleValidation.detectedAngles.includes(angle.id);
-                              return (
-                                <Badge
-                                  key={angle.id}
-                                  variant={isDetected ? "default" : angle.required ? "destructive" : "secondary"}
-                                  className="text-xs"
-                                >
-                                  {isDetected ? (
-                                    <CheckCircle2 className="h-3 w-3 mr-1" />
-                                  ) : (
-                                    <Camera className="h-3 w-3 mr-1" />
-                                  )}
-                                  {angle.name}
-                                  {!angle.required && " (optional)"}
-                                </Badge>
-                              );
-                            })}
-                          </div>
-                          {!angleValidation.isComplete && (
-                            <p className="text-sm text-muted-foreground mt-2">
-                              Please upload images from the missing angles for a complete listing.
-                            </p>
-                          )}
-                        </div>
-                      </AlertDescription>
-                    </Alert>
+              {/* EXTERIOR IMAGES SECTION */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Car className="h-5 w-5" />
+                    Exterior Photos (Hero Shots)
+                    <Badge variant="outline" className="ml-auto">
+                      {exteriorImages.length}/{MAX_EXTERIOR_IMAGES}
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription className="text-sm">
+                    Upload 1-3 exterior photos. Backgrounds will be removed and placed in a professional garage setting.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {/* Exterior Dropzone */}
+                  <div
+                    {...getExteriorRootProps()}
+                    className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:bg-gray-50 transition ${
+                      exteriorImages.length >= MAX_EXTERIOR_IMAGES
+                        ? "border-gray-200 bg-gray-50 cursor-not-allowed"
+                        : "border-gray-300"
+                    }`}
+                  >
+                    <input {...getExteriorInputProps()} />
+                    <div className="flex flex-col items-center justify-center">
+                      <Upload className="h-10 w-10 text-gray-400 mb-2" />
+                      <span className="text-sm text-gray-600">
+                        {exteriorImages.length >= MAX_EXTERIOR_IMAGES
+                          ? "Maximum exterior images reached"
+                          : "Drag & drop or click to upload exterior images"}
+                      </span>
+                      <span className="text-xs text-gray-500 mt-1">
+                        (Front 3/4, Side, Rear views recommended)
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Exterior Upload Progress */}
+                  {exteriorUploadProgress > 0 && (
+                    <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                      <div
+                        className="bg-blue-600 h-2.5 rounded-full"
+                        style={{ width: `${exteriorUploadProgress}%` }}
+                      ></div>
+                    </div>
                   )}
-                </div>
-              )}
 
-              {/* Image Previews */}
-              {uploadedImages.length > 0 && (
-                <div className="mt-4">
-                  <h3 className="text-sm font-medium mb-2">
-                    Uploaded Images ({uploadedImages.length})
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                    {uploadedImages.map((image, index) => {
-                      const imageResult = angleValidation?.imageResults?.find(
-                        (r) => r.index === index
-                      );
-                      const detectedAngle = imageResult?.validation?.angle;
-                      const confidence = imageResult?.validation?.confidence;
-
-                      return (
-                        <div key={index} className="relative group">
-                          <Image
-                            src={image}
-                            alt={`Car image ${index + 1}`}
-                            height={50}
-                            width={50}
-                            className="h-28 w-full object-cover rounded-md"
-                            priority
-                          />
-                          {/* Angle badge */}
-                          {detectedAngle && detectedAngle !== "unknown" && (
-                            <Badge
-                              variant="secondary"
-                              className="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 bg-black/70 text-white"
-                            >
-                              {detectedAngle}
-                              {confidence && ` (${Math.round(confidence * 100)}%)`}
-                            </Badge>
-                          )}
-                          {/* Remove button */}
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="destructive"
-                            className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => removeImage(index)}
-                            disabled={processingIndex === index}
-                          >
-                            <X className="h-3 w-3" />
-                          </Button>
-                          {/* Remove Background button */}
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            className="absolute bottom-1 left-1 right-1 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => handleRemoveBackground(index)}
-                            disabled={processingIndex !== null}
-                          >
-                            {processingIndex === index ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : (
-                              <>
-                                <Wand2 className="h-3 w-3 mr-1" />
-                                Remove BG
-                              </>
-                            )}
-                          </Button>
+                  {/* Angle Detection Summary (informational only) */}
+                  {(angleValidation || isValidatingAngles) && (
+                    <div className="mt-4">
+                      {isValidatingAngles ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Detecting camera angles...
                         </div>
-                      );
-                    })}
+                      ) : angleValidation?.detectedAngles?.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {angleValidation.detectedAngles
+                            .filter((a) => a !== "interior" && a !== "unknown")
+                            .map((angle) => (
+                              <Badge key={angle} variant="secondary" className="text-xs">
+                                <CheckCircle2 className="h-3 w-3 mr-1" />
+                                {angle}
+                              </Badge>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Exterior Image Previews */}
+                  {exteriorImages.length > 0 && (
+                    <div className="mt-4">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                        {exteriorImages.map((image, index) => {
+                          const imageResult = angleValidation?.imageResults?.find(
+                            (r) => r.index === index
+                          );
+                          const detectedAngle = imageResult?.validation?.angle;
+                          const confidence = imageResult?.validation?.confidence;
+                          const isProcessing =
+                            processingImage.type === "exterior" && processingImage.index === index;
+
+                          return (
+                            <div key={index} className="relative group">
+                              <Image
+                                src={image}
+                                alt={`Exterior ${index + 1}`}
+                                height={50}
+                                width={50}
+                                className="h-32 w-full object-cover rounded-md"
+                                priority
+                              />
+                              {/* Angle badge */}
+                              {detectedAngle && detectedAngle !== "unknown" && (
+                                <Badge
+                                  variant="secondary"
+                                  className="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 bg-black/70 text-white"
+                                >
+                                  {detectedAngle}
+                                  {confidence && ` (${Math.round(confidence * 100)}%)`}
+                                </Badge>
+                              )}
+                              {/* Remove button */}
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="destructive"
+                                className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => removeExteriorImage(index)}
+                                disabled={isProcessing}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                              {/* Remove Background button */}
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                className="absolute bottom-1 left-1 right-1 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => handleRemoveBackground(index)}
+                                disabled={processingImage.type !== null}
+                              >
+                                {isProcessing ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Wand2 className="h-3 w-3 mr-1" />
+                                    Remove BG
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* INTERIOR IMAGES SECTION */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <LayoutGrid className="h-5 w-5" />
+                    Interior Photos
+                    <Badge variant="outline" className="ml-auto">
+                      {interiorImages.length}/{MAX_INTERIOR_IMAGES}
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription className="text-sm">
+                    Upload 1-2 interior photos. Windows will be automatically whitened for privacy.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {/* Interior Dropzone */}
+                  <div
+                    {...getInteriorRootProps()}
+                    className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:bg-gray-50 transition ${
+                      interiorImages.length >= MAX_INTERIOR_IMAGES
+                        ? "border-gray-200 bg-gray-50 cursor-not-allowed"
+                        : "border-gray-300"
+                    }`}
+                  >
+                    <input {...getInteriorInputProps()} />
+                    <div className="flex flex-col items-center justify-center">
+                      <Upload className="h-10 w-10 text-gray-400 mb-2" />
+                      <span className="text-sm text-gray-600">
+                        {interiorImages.length >= MAX_INTERIOR_IMAGES
+                          ? "Maximum interior images reached"
+                          : "Drag & drop or click to upload interior images"}
+                      </span>
+                      <span className="text-xs text-gray-500 mt-1">
+                        (Dashboard, seats, cabin views)
+                      </span>
+                    </div>
                   </div>
-                </div>
-              )}
+
+                  {/* Interior Upload Progress */}
+                  {interiorUploadProgress > 0 && (
+                    <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                      <div
+                        className="bg-green-600 h-2.5 rounded-full"
+                        style={{ width: `${interiorUploadProgress}%` }}
+                      ></div>
+                    </div>
+                  )}
+
+                  {/* Interior Image Previews */}
+                  {interiorImages.length > 0 && (
+                    <div className="mt-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        {interiorImages.map((image, index) => {
+                          const isProcessing =
+                            processingImage.type === "interior" && processingImage.index === index;
+
+                          return (
+                            <div key={index} className="relative group">
+                              <Image
+                                src={image}
+                                alt={`Interior ${index + 1}`}
+                                height={50}
+                                width={50}
+                                className="h-32 w-full object-cover rounded-md"
+                                priority
+                              />
+                              {/* Remove button */}
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="destructive"
+                                className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => removeInteriorImage(index)}
+                                disabled={isProcessing}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                              {/* Whiten Windows button */}
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                className="absolute bottom-1 left-1 right-1 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => handleWhitenWindows(index)}
+                                disabled={processingImage.type !== null}
+                              >
+                                {isProcessing ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Wand2 className="h-3 w-3 mr-1" />
+                                    Whiten Windows
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </div>
 
             <Button
