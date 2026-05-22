@@ -30,11 +30,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { addCar } from "@/actions/cars";
 import { removeImageBackground, validateCarImages, getRequiredAngles } from "@/actions/image-processing";
+import { createBatchProcessingJob, getJobStatus } from "@/actions/batch-processing";
 import useFetch from "@/hooks/use-fetch";
 import Image from "next/image";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { AlertTriangle, CheckCircle2, Camera } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Camera, Zap, Clock } from "lucide-react";
 
 // Predefined options
 const fuelTypes = ["Petrol", "Diesel", "Electric", "Hybrid", "Plug-in Hybrid"];
@@ -78,6 +79,11 @@ export const AddCarForm = () => {
   const [processingIndex, setProcessingIndex] = useState(null);
   const [angleValidation, setAngleValidation] = useState(null);
   const [isValidatingAngles, setIsValidatingAngles] = useState(false);
+
+  // Batch processing state
+  const [batchJob, setBatchJob] = useState(null);
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [batchPollInterval, setBatchPollInterval] = useState(null);
 
   // Initialize form with react-hook-form and zod
   const {
@@ -238,6 +244,106 @@ export const AddCarForm = () => {
       setProcessingIndex(null);
     }
   };
+
+  // Batch process all images (50% cheaper)
+  const handleBatchProcess = async () => {
+    if (uploadedImages.length === 0) {
+      toast.error("Please upload images first");
+      return;
+    }
+
+    setIsBatchProcessing(true);
+    setBatchJob({ status: "PENDING" });
+
+    try {
+      const result = await createBatchProcessingJob(uploadedImages);
+
+      if (result.success) {
+        setBatchJob({
+          id: result.jobId,
+          batchId: result.batchId,
+          status: result.status,
+        });
+        toast.info("Batch job submitted. Processing in background...");
+
+        // Start polling for completion
+        pollBatchJobStatus(result.jobId);
+      } else {
+        setBatchJob(null);
+        toast.error(result.error || "Failed to create batch job");
+        setIsBatchProcessing(false);
+      }
+    } catch (error) {
+      console.error("Batch processing error:", error);
+      setBatchJob(null);
+      toast.error("Failed to create batch job");
+      setIsBatchProcessing(false);
+    }
+  };
+
+  // Poll batch job status
+  const pollBatchJobStatus = (jobId) => {
+    // Clear any existing interval
+    if (batchPollInterval) {
+      clearInterval(batchPollInterval);
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        const status = await getJobStatus(jobId);
+        setBatchJob((prev) => ({ ...prev, ...status }));
+
+        if (status.status === "SUCCEEDED") {
+          clearInterval(interval);
+          setBatchPollInterval(null);
+
+          // Replace images with processed versions
+          if (status.results && Array.isArray(status.results)) {
+            const processedUrls = status.results
+              .sort((a, b) => a.index - b.index)
+              .filter((r) => r.processedUrl)
+              .map((r) => r.processedUrl);
+
+            if (processedUrls.length > 0) {
+              setUploadedImages(processedUrls);
+            }
+          }
+
+          toast.success(
+            `Batch processing complete! ${status.processedCount} images processed.`
+          );
+          setIsBatchProcessing(false);
+        } else if (status.status === "FAILED" || status.status === "CANCELLED") {
+          clearInterval(interval);
+          setBatchPollInterval(null);
+          toast.error(status.error || "Batch processing failed");
+          setIsBatchProcessing(false);
+        }
+      } catch (error) {
+        console.error("Polling error:", error);
+      }
+    }, 5000); // Poll every 5 seconds
+
+    setBatchPollInterval(interval);
+
+    // Stop polling after 30 minutes
+    setTimeout(() => {
+      clearInterval(interval);
+      setBatchPollInterval(null);
+      if (isBatchProcessing) {
+        toast.warning("Batch processing is taking longer than expected. Check back later.");
+      }
+    }, 30 * 60 * 1000);
+  };
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (batchPollInterval) {
+        clearInterval(batchPollInterval);
+      }
+    };
+  }, [batchPollInterval]);
 
   const onSubmit = async (data) => {
     // Check if images are uploaded
@@ -658,7 +764,7 @@ export const AddCarForm = () => {
                             variant="destructive"
                             className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
                             onClick={() => removeImage(index)}
-                            disabled={processingIndex === index}
+                            disabled={processingIndex === index || isBatchProcessing}
                           >
                             <X className="h-3 w-3" />
                           </Button>
@@ -669,7 +775,7 @@ export const AddCarForm = () => {
                             variant="secondary"
                             className="absolute bottom-1 left-1 right-1 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
                             onClick={() => handleRemoveBackground(index)}
-                            disabled={processingIndex !== null}
+                            disabled={processingIndex !== null || isBatchProcessing}
                           >
                             {processingIndex === index ? (
                               <Loader2 className="h-3 w-3 animate-spin" />
@@ -683,6 +789,88 @@ export const AddCarForm = () => {
                         </div>
                       );
                     })}
+                  </div>
+
+                  {/* Batch Processing Section */}
+                  <div className="mt-4 p-4 border rounded-lg bg-muted/50">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h4 className="text-sm font-medium flex items-center gap-2">
+                          <Zap className="h-4 w-4 text-yellow-500" />
+                          Batch Processing
+                          <Badge variant="secondary" className="text-[10px]">50% cheaper</Badge>
+                        </h4>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Process all images at once using Gemini Batch API
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={handleBatchProcess}
+                        disabled={isBatchProcessing || uploadedImages.length === 0 || processingIndex !== null}
+                        variant="outline"
+                        className="shrink-0"
+                      >
+                        {isBatchProcessing ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Processing...
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 className="mr-2 h-4 w-4" />
+                            Process All ({uploadedImages.length})
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    {/* Batch Job Status */}
+                    {batchJob && (
+                      <div className="mt-3 p-3 bg-background rounded-md border">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-medium">Status</span>
+                          <Badge
+                            variant={
+                              batchJob.status === "SUCCEEDED"
+                                ? "default"
+                                : batchJob.status === "FAILED"
+                                ? "destructive"
+                                : "secondary"
+                            }
+                          >
+                            {batchJob.status}
+                          </Badge>
+                        </div>
+
+                        {batchJob.status === "SUBMITTED" || batchJob.status === "PROCESSING" ? (
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Clock className="h-3 w-3 animate-pulse" />
+                              Processing in background...
+                            </div>
+                            <div className="h-1 w-full bg-gray-200 rounded-full overflow-hidden">
+                              <div className="h-full bg-blue-500 rounded-full animate-pulse w-1/2" />
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {batchJob.processedCount !== undefined && (
+                          <div className="text-xs text-muted-foreground mt-2">
+                            Processed: {batchJob.processedCount}/{batchJob.totalImages}
+                            {batchJob.failedCount > 0 && (
+                              <span className="text-red-500 ml-2">
+                                ({batchJob.failedCount} failed)
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {batchJob.error && (
+                          <p className="text-xs text-red-500 mt-2">{batchJob.error}</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

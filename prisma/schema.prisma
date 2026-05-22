@@ -9,17 +9,18 @@ datasource db {
 }
 
 model User {
-  id            String             @id @default(uuid())
-  clerkUserId   String             @unique // clerk user id
-  email         String             @unique
+  id            String               @id @default(uuid())
+  clerkUserId   String               @unique // clerk user id
+  email         String               @unique
   name          String?
   imageUrl      String?
   phone         String?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-  role          UserRole           @default(USER)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  role          UserRole             @default(USER)
   savedCars     UserSavedCar[]
   testDrives    TestDriveBooking[]
+  processingJobs ImageProcessingJob[]
 }
 
 enum UserRole {
@@ -28,11 +29,11 @@ enum UserRole {
 }
 
 model Car {
-  id                String             @id @default(uuid())
+  id                String               @id @default(uuid())
   make              String
   model             String
   year              Int
-  price             Decimal            @db.Decimal(10, 2)
+  price             Decimal              @db.Decimal(10, 2)
   mileage           Int
   color             String
   fuelType          String
@@ -40,13 +41,14 @@ model Car {
   bodyType          String
   seats             Int?
   description       String
-  status            CarStatus          @default(AVAILABLE)
-  featured          Boolean            @default(false)
-  images            String[]           // Array of Supabase storage URLs
+  status            CarStatus            @default(AVAILABLE)
+  featured          Boolean              @default(false)
+  images            String[]             // Array of storage URLs
   savedBy           UserSavedCar[]
   testDriveBookings TestDriveBooking[]
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
+  processingJobs    ImageProcessingJob[]
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 
   @@index([make, model])
   @@index([bodyType])
@@ -55,6 +57,64 @@ model Car {
   @@index([status])
   @@index([fuelType])
   @@index([featured])
+}
+
+// Batch image processing job tracking
+model ImageProcessingJob {
+  id               String       @id @default(uuid())
+
+  // Gemini Batch API tracking
+  geminiBatchId    String?      @unique // batches/abc123
+  geminiFileId     String?      // files/xyz789 (input JSONL)
+  geminiOutputFile String?      // files/output123 (results JSONL)
+
+  // Job metadata
+  carId            String?
+  car              Car?         @relation(fields: [carId], references: [id], onDelete: SetNull)
+  userId           String
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  processType      ProcessType  @default(BATCH_COMPOSITE)
+
+  // Input tracking
+  inputImages      Json         // Array of { index, imageUrl, originalName }
+  totalImages      Int
+
+  // Status tracking
+  status           JobStatus    @default(PENDING)
+  processedCount   Int          @default(0)
+  failedCount      Int          @default(0)
+
+  // Results
+  results          Json?        // Array of { index, processedUrl, error? }
+  errorMessage     String?
+
+  // Timestamps
+  createdAt        DateTime     @default(now())
+  submittedAt      DateTime?    // When sent to Gemini
+  completedAt      DateTime?    // When webhook received
+  updatedAt        DateTime     @updatedAt
+
+  @@index([status])
+  @@index([geminiBatchId])
+  @@index([userId])
+  @@index([carId])
+}
+
+enum ProcessType {
+  BACKGROUND_REMOVAL
+  ANGLE_VALIDATION
+  BATCH_COMPOSITE
+}
+
+enum JobStatus {
+  PENDING         // Job record created
+  BUILDING_FILE   // Creating JSONL
+  UPLOADING_FILE  // Uploading to Gemini Files API
+  SUBMITTED       // Batch job dispatched
+  PROCESSING      // Gemini is processing
+  SUCCEEDED       // Completed successfully
+  FAILED          // Failed (partial or complete)
+  CANCELLED       // User cancelled
 }
 
 enum CarStatus {
